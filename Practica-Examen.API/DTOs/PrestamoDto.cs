@@ -1,11 +1,24 @@
-namespace Practica_Examen.API.DTOs;
+using System.ComponentModel.DataAnnotations;
 
-public class PrestamoDto
+namespace Practica_Examen.API.Models
 {
-    public string Id { get; set; } = string.Empty;
-    public string UsuarioId { get; set; } = string.Empty;
-    public string LibroId { get; set; } = string.Empty;
-    public DateTime FechaPrestamo { get; set; }
-    public DateTime? FechaDevolucion { get; set; }
-    public string Estado { get; set; } = string.Empty;
+    public class PrestamoDto
+    {
+        public int Id { get; set; }
+
+        [Required]
+        public int UsuarioId { get; set; }
+        public Usuario Usuario { get; set; }
+
+        [Required]
+        public int LibroId { get; set; }
+        public Libro Libro { get; set; }
+
+        public DateTime FechaPrestamo { get; set; } = DateTime.UtcNow;
+        public DateTime FechaDevolucionEsperada { get; set; }
+        public DateTime? FechaDevolucionReal { get; set; }
+
+        [Required]
+        public string Estado { get; set; } = "activo"; // "activo" o "devuelto"
+    }
 }
