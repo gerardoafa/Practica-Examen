@@ -1,43 +1,56 @@
+using Google.Cloud.Firestore;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Practica_Examen.API.Data;
 using Practica_Examen.API.Models;
+using Practica_Examen.API.Services;
 using System.Security.Claims;
 
 namespace Practica_Examen.API.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize]  // Solo usuarios autenticados (puedes cambiar a [Authorize(Roles = "Admin")] si es solo para administrador)
+    [Authorize]
     public class ReportesController : ControllerBase
     {
-        private readonly ApplicationDbContext _context;
+        private readonly FirestoreService _firestore;
 
-        public ReportesController(ApplicationDbContext context)
+        public ReportesController(FirestoreService firestore)
         {
-            _context = context;
+            _firestore = firestore;
         }
 
         // GET: api/reportes/prestamos-activos
         [HttpGet("prestamos-activos")]
         public async Task<IActionResult> PrestamosActivos()
         {
-            var prestamos = await _context.Prestamos
-                .Include(p => p.Usuario)
-                .Include(p => p.Libro)
-                .Where(p => p.Estado == "activo")
-                .Select(p => new
+            var snapshot = await _firestore.Prestamos
+                .WhereEqualTo("estado", "activo")
+                .OrderByDescending("fechaPrestamo")
+                .GetSnapshotAsync();
+
+            var prestamos = new List<object>();
+
+            foreach (var doc in snapshot.Documents)
+            {
+                var p = doc.ConvertTo<Prestamo>();
+                p.Id = doc.Id;
+
+                var usuarioSnap = await _firestore.Usuarios.Document(p.UsuarioId).GetSnapshotAsync();
+                var libroSnap = await _firestore.Libros.Document(p.LibroId).GetSnapshotAsync();
+
+                var usuario = usuarioSnap.Exists ? usuarioSnap.ConvertTo<Usuario>() : new Usuario { Nombre = "Desconocido", Apellido = "" };
+                var libro = libroSnap.Exists ? libroSnap.ConvertTo<Libro>() : new Libro { Titulo = "Desconocido" };
+
+                prestamos.Add(new
                 {
-                    p.Id,
-                    Usuario = p.Usuario.Nombre + " " + p.Usuario.Apellido, // ajusta según tus campos
-                    Libro = p.Libro.Titulo,
+                    Id = p.Id,
+                    Usuario = $"{usuario.Nombre} {usuario.Apellido}".Trim(),
+                    Libro = libro.Titulo,
                     p.FechaPrestamo,
                     p.FechaDevolucionEsperada,
                     DiasRestantes = (p.FechaDevolucionEsperada - DateTime.UtcNow).Days
-                })
-                .OrderByDescending(p => p.FechaPrestamo)
-                .ToListAsync();
+                });
+            }
 
             return Ok(prestamos);
         }
@@ -48,64 +61,89 @@ namespace Practica_Examen.API.Controllers
         {
             var hoy = DateTime.UtcNow;
 
-            var vencidos = await _context.Prestamos
-                .Include(p => p.Usuario)
-                .Include(p => p.Libro)
-                .Where(p => p.Estado == "activo" && p.FechaDevolucionEsperada < hoy)
-                .Select(p => new
+            var snapshot = await _firestore.Prestamos
+                .WhereEqualTo("estado", "activo")
+                .GetSnapshotAsync(); // Firestore no permite < en la misma query fácilmente, filtramos en memoria
+
+            var vencidos = new List<object>();
+
+            foreach (var doc in snapshot.Documents)
+            {
+                var p = doc.ConvertTo<Prestamo>();
+                p.Id = doc.Id;
+
+                if (p.FechaDevolucionEsperada >= hoy) continue;
+
+                var usuarioSnap = await _firestore.Usuarios.Document(p.UsuarioId).GetSnapshotAsync();
+                var libroSnap = await _firestore.Libros.Document(p.LibroId).GetSnapshotAsync();
+
+                var usuario = usuarioSnap.Exists ? usuarioSnap.ConvertTo<Usuario>() : new Usuario { Nombre = "Desconocido", Apellido = "" };
+                var libro = libroSnap.Exists ? libroSnap.ConvertTo<Libro>() : new Libro { Titulo = "Desconocido" };
+
+                var diasRetraso = (hoy - p.FechaDevolucionEsperada).Days;
+
+                vencidos.Add(new
                 {
-                    p.Id,
-                    Usuario = p.Usuario.Nombre + " " + p.Usuario.Apellido,
-                    Libro = p.Libro.Titulo,
+                    Id = p.Id,
+                    Usuario = $"{usuario.Nombre} {usuario.Apellido}".Trim(),
+                    Libro = libro.Titulo,
                     p.FechaPrestamo,
                     p.FechaDevolucionEsperada,
-                    DiasRetraso = (hoy - p.FechaDevolucionEsperada).Days,
-                    MultaEstimada = (hoy - p.FechaDevolucionEsperada).Days * 50m
-                })
-                .OrderByDescending(p => p.DiasRetraso)
-                .ToListAsync();
+                    DiasRetraso = diasRetraso,
+                    MultaEstimada = diasRetraso * 50m
+                });
+            }
 
-            return Ok(vencidos);
+            // Ordenar en memoria
+            var resultado = vencidos.OrderByDescending(x => ((dynamic)x).DiasRetraso).ToList();
+
+            return Ok(resultado);
         }
 
         // GET: api/reportes/multas-usuarios
         [HttpGet("multas-usuarios")]
         public async Task<IActionResult> MultasPorUsuario()
         {
-            var usuariosConMultas = await _context.Usuarios
-                .Where(u => u.Multas > 0)
-                .Select(u => new
-                {
-                    u.Id,
-                    NombreCompleto = u.Nombre + " " + u.Apellido,
-                    u.Multas,
-                    PrestamosActivos = _context.Prestamos.Count(p => p.UsuarioId == u.Id && p.Estado == "activo")
-                })
-                .OrderByDescending(u => u.Multas)
-                .ToListAsync();
+            var usuariosSnapshot = await _firestore.Usuarios
+                .WhereGreaterThan("multas", 0)
+                .GetSnapshotAsync();
 
-            return Ok(usuariosConMultas);
+            var resultado = new List<object>();
+
+            foreach (var doc in usuariosSnapshot.Documents)
+            {
+                var u = doc.ConvertTo<Usuario>();
+                u.Id = doc.Id;
+
+                // Contar préstamos activos del usuario
+                var prestamosActivosSnap = await _firestore.Prestamos
+                    .WhereEqualTo("usuarioId", u.Id)
+                    .WhereEqualTo("estado", "activo")
+                    .GetSnapshotAsync();
+
+                resultado.Add(new
+                {
+                    Id = u.Id,
+                    NombreCompleto = $"{u.Nombre} {u.Apellido}".Trim(),
+                    Multas = u.Multas,
+                    PrestamosActivos = prestamosActivosSnap.Documents.Count
+                });
+            }
+
+            var ordenado = resultado.OrderByDescending(x => ((dynamic)x).Multas).ToList();
+            return Ok(ordenado);
         }
 
         // GET: api/reportes/reservas-pendientes
         [HttpGet("reservas-pendientes")]
         public async Task<IActionResult> ReservasPendientes()
         {
-            var reservas = await _context.Reservas
-                .Include(r => r.Usuario)
-                .Include(r => r.Libro)
-                .Where(r => r.Estado == "pendiente")
-                .Select(r => new
-                {
-                    r.Id,
-                    Usuario = r.Usuario.Nombre + " " + r.Usuario.Apellido,
-                    Libro = r.Libro.Titulo,
-                    r.Prioridad,
-                    r.FechaCreacion
-                })
-                .OrderBy(r => r.FechaCreacion)
-                .ToListAsync();
+            var snapshot = await _firestore.Reservas
+                .WhereEqualTo("estado", "pendiente")
+                .OrderBy("fechaCreacion")
+                .GetSnapshotAsync();
 
+            var reservas = await ProcesarReservasConInfo(snapshot);
             return Ok(reservas);
         }
 
@@ -113,23 +151,12 @@ namespace Practica_Examen.API.Controllers
         [HttpGet("reservas-notificadas")]
         public async Task<IActionResult> ReservasNotificadas()
         {
-            var reservas = await _context.Reservas
-                .Include(r => r.Usuario)
-                .Include(r => r.Libro)
-                .Where(r => r.Estado == "notificada")
-                .Select(r => new
-                {
-                    r.Id,
-                    Usuario = r.Usuario.Nombre + " " + r.Usuario.Apellido,
-                    Libro = r.Libro.Titulo,
-                    r.Prioridad,
-                    r.FechaNotificacion,
-                    r.FechaExpiracion,
-                    Expirada = r.FechaExpiracion < DateTime.UtcNow
-                })
-                .OrderByDescending(r => r.FechaNotificacion)
-                .ToListAsync();
+            var snapshot = await _firestore.Reservas
+                .WhereEqualTo("estado", "notificada")
+                .OrderByDescending("fechaNotificacion")
+                .GetSnapshotAsync();
 
+            var reservas = await ProcesarReservasConInfo(snapshot);
             return Ok(reservas);
         }
 
@@ -137,20 +164,74 @@ namespace Practica_Examen.API.Controllers
         [HttpGet("libros-mas-prestados")]
         public async Task<IActionResult> LibrosMasPrestados()
         {
-            var topLibros = await _context.Prestamos
-                .Include(p => p.Libro)
-                .GroupBy(p => p.Libro)
-                .Select(g => new
-                {
-                    Libro = g.Key.Titulo,
-                    Autor = g.Key.Autor,        // ajusta si tienes campo Autor
-                    TotalPrestamos = g.Count()
-                })
-                .OrderByDescending(x => x.TotalPrestamos)
-                .Take(10)
-                .ToListAsync();
+            var snapshot = await _firestore.Prestamos.GetSnapshotAsync();
 
-            return Ok(topLibros);
+            var conteo = new Dictionary<string, (string Titulo, string Autor, int Total)>();
+
+            foreach (var doc in snapshot.Documents)
+            {
+                var p = doc.ConvertTo<Prestamo>();
+                var libroSnap = await _firestore.Libros.Document(p.LibroId).GetSnapshotAsync();
+
+                if (!libroSnap.Exists) continue;
+
+                var libro = libroSnap.ConvertTo<Libro>();
+
+                if (conteo.ContainsKey(p.LibroId))
+                {
+                    var actual = conteo[p.LibroId];
+                    conteo[p.LibroId] = (actual.Titulo, actual.Autor, actual.Total + 1);
+                }
+                else
+                {
+                    conteo[p.LibroId] = (libro.Titulo, libro.Autor, 1);
+                }
+            }
+
+            var top10 = conteo.Values
+                .OrderByDescending(x => x.Total)
+                .Take(10)
+                .Select(x => new
+                {
+                    Libro = x.Titulo,
+                    Autor = x.Autor,
+                    TotalPrestamos = x.Total
+                })
+                .ToList();
+
+            return Ok(top10);
+        }
+
+        // Método helper privado para evitar repetir código
+        private async Task<List<object>> ProcesarReservasConInfo(QuerySnapshot snapshot)
+        {
+            var lista = new List<object>();
+
+            foreach (var doc in snapshot.Documents)
+            {
+                var r = doc.ConvertTo<Reserva>();
+                r.Id = doc.Id;
+
+                var usuarioSnap = await _firestore.Usuarios.Document(r.UsuarioId).GetSnapshotAsync();
+                var libroSnap = await _firestore.Libros.Document(r.LibroId).GetSnapshotAsync();
+
+                var usuario = usuarioSnap.Exists ? usuarioSnap.ConvertTo<Usuario>() : new Usuario { Nombre = "Desconocido", Apellido = "" };
+                var libro = libroSnap.Exists ? libroSnap.ConvertTo<Libro>() : new Libro { Titulo = "Desconocido" };
+
+                lista.Add(new
+                {
+                    Id = r.Id,
+                    Usuario = $"{usuario.Nombre} {usuario.Apellido}".Trim(),
+                    Libro = libro.Titulo,
+                    r.Prioridad,
+                    r.FechaCreacion,
+                    r.FechaNotificacion,
+                    r.FechaExpiracion,
+                    Expirada = r.FechaExpiracion.HasValue && r.FechaExpiracion < DateTime.UtcNow
+                });
+            }
+
+            return lista;
         }
     }
 }
