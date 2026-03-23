@@ -1,16 +1,28 @@
-namespace Practica_Examen.API.DTOs;
+using System.ComponentModel.DataAnnotations;
 
-public class ReservaRequest
+namespace Practica_Examen.API.Models
 {
-    public string UsuarioId { get; set; } = string.Empty;
-    public string LibroId { get; set; } = string.Empty;
-}
+    public class Reserva
+    {
+        public int Id { get; set; }
 
-public class ReservaDto
-{
-    public string Id { get; set; } = string.Empty;
-    public string UsuarioId { get; set; } = string.Empty;
-    public string LibroId { get; set; } = string.Empty;
-    public DateTime FechaReserva { get; set; }
-    public string Estado { get; set; } = string.Empty;
+        [Required]
+        public int UsuarioId { get; set; }
+        public Usuario Usuario { get; set; }
+
+        [Required]
+        public int LibroId { get; set; }
+        public Libro Libro { get; set; }
+
+        [Required]
+        public int Prioridad { get; set; }
+
+        [Required]
+        public string Estado { get; set; } = "pendiente"; // "pendiente" o "notificada"
+
+        public DateTime? FechaNotificacion { get; set; }
+        public DateTime? FechaExpiracion { get; set; }
+
+        public DateTime FechaCreacion { get; set; } = DateTime.UtcNow;
+    }
 }
