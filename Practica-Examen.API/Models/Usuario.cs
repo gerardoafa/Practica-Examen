@@ -6,27 +6,39 @@ namespace Practica_Examen.API.Models;
 [FirestoreData]
 public class Usuario
 {
-    [JsonPropertyName("id")]
-    [FirestoreProperty]
-    public string Id { get; set; } = string.Empty;
+    [FirestoreDocumentId]
+    public string? Id { get; set; }
 
-    [JsonPropertyName("nombre")]
-    [FirestoreProperty]
-    public string Nombre { get; set; } = string.Empty;
+    [FirestoreProperty("nombre")]
+    public string Nombre { get; set; } = "";
 
-    [JsonPropertyName("email")]
-    [FirestoreProperty]
-    public string Email { get; set; } = string.Empty;
+    [FirestoreProperty("apellido")]
+    public string Apellido { get; set; } = "";
 
-    [JsonPropertyName("password")]
-    [FirestoreProperty]
-    public string Password { get; set; } = string.Empty;
+    [FirestoreProperty("correo")]
+    public string Correo { get; set; } = "";
 
-    [JsonPropertyName("rol")]
-    [FirestoreProperty]
+    [FirestoreProperty("contrasena")]
+    public string Contrasena { get; set; } = "";
+
+    [FirestoreProperty("edad")]
+    public int Edad { get; set; }
+
+    [FirestoreProperty("numeroIdentidad")]
+    public string NumeroIdentidad { get; set; } = "";
+
+    [FirestoreProperty("telefono")]
+    public string Telefono { get; set; } = "";
+
+    [FirestoreProperty("rol")]
     public string Rol { get; set; } = "usuario";
 
-    [JsonPropertyName("fechaRegistro")]
-    [FirestoreProperty]
-    public DateTime FechaRegistro { get; set; } = DateTime.UtcNow;
+    [FirestoreProperty("activo")]
+    public bool Activo { get; set; } = true;
+
+    [FirestoreProperty("fechaRegistro")]
+    public Timestamp FechaRegistro { get; set; }
+
+    [FirestoreProperty("multas")]
+    public double Multas { get; set; } = 0;
 }

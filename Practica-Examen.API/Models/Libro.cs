@@ -6,31 +6,42 @@ namespace Practica_Examen.API.Models;
 [FirestoreData]
 public class Libro
 {
-    [JsonPropertyName("id")]
-    [FirestoreProperty]
-    public string Id { get; set; } = string.Empty;
+    [FirestoreDocumentId]
+    public string? Id { get; set; }
 
-    [JsonPropertyName("titulo")]
-    [FirestoreProperty]
-    public string Titulo { get; set; } = string.Empty;
+    [FirestoreProperty("titulo")]
+    public string Titulo { get; set; } = "";
 
-    [JsonPropertyName("autor")]
-    [FirestoreProperty]
-    public string Autor { get; set; } = string.Empty;
+    [FirestoreProperty("autor")]
+    public string Autor { get; set; } = "";
 
-    [JsonPropertyName("isbn")]
-    [FirestoreProperty]
-    public string ISBN { get; set; } = string.Empty;
+    [FirestoreProperty("isbn")]
+    public string Isbn { get; set; } = "";
 
-    [JsonPropertyName("categoria")]
-    [FirestoreProperty]
-    public string Categoria { get; set; } = string.Empty;
+    [FirestoreProperty("categoria")]
+    public string Categoria { get; set; } = "";
 
-    [JsonPropertyName("stock")]
-    [FirestoreProperty]
-    public int Stock { get; set; }
+    [FirestoreProperty("editorial")]
+    public string Editorial { get; set; } = "";
 
-    [JsonPropertyName("disponible")]
-    [FirestoreProperty]
-    public bool Disponible { get; set; } = true;
+    [FirestoreProperty("anoPublicacion")]
+    public int AnoPublicacion { get; set; }
+
+    [FirestoreProperty("copiasDisponibles")]
+    public int CopiasDisponibles { get; set; }
+
+    [FirestoreProperty("copiasTotal")]
+    public int CopiasTotal { get; set; }
+
+    [FirestoreProperty("ubicacion")]
+    public string Ubicacion { get; set; } = "";
+
+    [FirestoreProperty("estado")]
+    public string Estado { get; set; } = "disponible";
+
+    [FirestoreProperty("descripcion")]
+    public string Descripcion { get; set; } = "";
+
+    [FirestoreProperty("fechaIngreso")]
+    public Timestamp FechaIngreso { get; set; }
 }
