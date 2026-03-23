@@ -1,8 +1,8 @@
+using Google.Cloud.Firestore;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Practica_Examen.API.Data;
 using Practica_Examen.API.Models;
+using Practica_Examen.API.Services;
 using System.Security.Claims;
 
 namespace Practica_Examen.API.Controllers
@@ -12,44 +12,60 @@ namespace Practica_Examen.API.Controllers
     [Authorize]
     public class ReservasController : ControllerBase
     {
-        private readonly ApplicationDbContext _context;
+        private readonly FirestoreService _firestore;
 
-        public ReservasController(ApplicationDbContext context)
+        public ReservasController(FirestoreService firestore)
         {
-            _context = context;
+            _firestore = firestore;
         }
 
         // POST /api/reservas
         [HttpPost]
         public async Task<IActionResult> CrearReserva([FromBody] CrearReservaDto dto)
         {
-            var usuarioId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
-            var libro = await _context.Libros.FindAsync(dto.LibroId);
+            var usuarioId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(usuarioId))
+                return Unauthorized("Usuario no autenticado.");
 
-            if (libro == null || libro.CopiasDisponibles != 0)
-                return BadRequest("El libro debe existir y no tener copias disponibles.");
+            // Verificar que el libro exista y NO tenga copias disponibles
+            var libroDoc = await _firestore.Libros.Document(dto.LibroId).GetSnapshotAsync();
+            if (!libroDoc.Exists)
+                return BadRequest("El libro no existe.");
 
-            var yaTieneReserva = await _context.Reservas.AnyAsync(r =>
-                r.UsuarioId == usuarioId &&
-                r.LibroId == dto.LibroId &&
-                (r.Estado == "pendiente" || r.Estado == "notificada"));
+            var libro = libroDoc.ConvertTo<Libro>();
+            if (libro.CopiasDisponibles != 0)
+                return BadRequest("El libro debe tener 0 copias disponibles para poder reservarse.");
 
-            if (yaTieneReserva)
-                return BadRequest("Ya tiene una reserva para este libro.");
+            // Verificar que el usuario no tenga ya una reserva pendiente o notificada para este libro
+            var yaTieneReservaQuery = _firestore.Reservas
+                .WhereEqualTo("usuarioId", usuarioId)
+                .WhereEqualTo("libroId", dto.LibroId)
+                .WhereIn("estado", new[] { "pendiente", "notificada" });
 
-            var totalPendientes = await _context.Reservas
-                .CountAsync(r => r.LibroId == dto.LibroId && r.Estado == "pendiente");
+            var yaTieneSnapshot = await yaTieneReservaQuery.GetSnapshotAsync();
+            if (yaTieneSnapshot.Documents.Any())
+                return BadRequest("Ya tiene una reserva pendiente o notificada para este libro.");
 
+            // Obtener el total de reservas pendientes para calcular prioridad
+            var totalPendientesQuery = _firestore.Reservas
+                .WhereEqualTo("libroId", dto.LibroId)
+                .WhereEqualTo("estado", "pendiente");
+
+            var totalSnapshot = await totalPendientesQuery.GetSnapshotAsync();
+            int prioridad = totalSnapshot.Documents.Count() + 1;
+
+            // Crear la reserva
             var reserva = new Reserva
             {
                 UsuarioId = usuarioId,
                 LibroId = dto.LibroId,
-                Prioridad = totalPendientes + 1,
-                Estado = "pendiente"
+                Prioridad = prioridad,
+                Estado = "pendiente",
+                FechaCreacion = DateTime.UtcNow
             };
 
-            _context.Reservas.Add(reserva);
-            await _context.SaveChangesAsync();
+            var docRef = await _firestore.Reservas.AddAsync(reserva);
+            reserva.Id = docRef.Id;
 
             return CreatedAtAction(nameof(CrearReserva), new { id = reserva.Id }, reserva);
         }
@@ -58,62 +74,98 @@ namespace Practica_Examen.API.Controllers
         [HttpGet("mis-reservas")]
         public async Task<IActionResult> MisReservas()
         {
-            var usuarioId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
+            var usuarioId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(usuarioId))
+                return Unauthorized();
 
-            var reservas = await _context.Reservas
-                .Where(r => r.UsuarioId == usuarioId)
-                .Include(r => r.Libro)
-                .OrderBy(r => r.FechaCreacion)
-                .Select(r => new
+            var query = _firestore.Reservas
+                .WhereEqualTo("usuarioId", usuarioId)
+                .OrderBy("fechaCreacion");
+
+            var snapshot = await query.GetSnapshotAsync();
+
+            var reservas = snapshot.Documents.Select(doc =>
+            {
+                var r = doc.ConvertTo<Reserva>();
+                r.Id = doc.Id;
+
+                // Obtener info básica del libro (puedes cachear o usar un join manual si lo prefieres)
+                var libroTask = _firestore.Libros.Document(r.LibroId).GetSnapshotAsync();
+                var libroSnap = libroTask.Result; // bloqueante solo para simplicidad (en producción usa Task.WhenAll)
+
+                var libro = libroSnap.Exists ? libroSnap.ConvertTo<Libro>() : new Libro { Titulo = "Desconocido", Autor = "" };
+
+                return new
                 {
-                    r.Id,
-                    Libro = new { r.Libro.Titulo, r.Libro.Autor }, // ajusta según tus campos
+                    Id = r.Id,
+                    Libro = new { Titulo = libro.Titulo, Autor = libro.Autor },
                     r.Estado,
                     r.Prioridad,
                     PosicionEnCola = r.Prioridad,
                     r.FechaCreacion,
                     r.FechaNotificacion,
                     r.FechaExpiracion
-                })
-                .ToListAsync();
+                };
+            }).ToList();
 
             return Ok(reservas);
         }
 
         // DELETE /api/reservas/{id}
         [HttpDelete("{id}")]
-        public async Task<IActionResult> CancelarReserva(int id)
+        public async Task<IActionResult> CancelarReserva(string id)
         {
-            var usuarioId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
-            var reserva = await _context.Reservas
-                .FirstOrDefaultAsync(r => r.Id == id && r.UsuarioId == usuarioId);
+            var usuarioId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(usuarioId))
+                return Unauthorized();
 
-            if (reserva == null || (reserva.Estado != "pendiente" && reserva.Estado != "notificada"))
-                return BadRequest("Reserva no encontrada o no se puede cancelar.");
+            var docRef = _firestore.Reservas.Document(id);
+            var snapshot = await docRef.GetSnapshotAsync();
+
+            if (!snapshot.Exists)
+                return NotFound("Reserva no encontrada.");
+
+            var reserva = snapshot.ConvertTo<Reserva>();
+            if (reserva.UsuarioId != usuarioId)
+                return Forbid("No puedes cancelar una reserva que no te pertenece.");
+
+            if (reserva.Estado != "pendiente" && reserva.Estado != "notificada")
+                return BadRequest("Solo se pueden cancelar reservas en estado pendiente o notificada.");
 
             var libroId = reserva.LibroId;
-            _context.Reservas.Remove(reserva);
-            await _context.SaveChangesAsync();
 
-            // Recalcular prioridades
-            var reservasRestantes = await _context.Reservas
-                .Where(r => r.LibroId == libroId && r.Estado == "pendiente")
-                .OrderBy(r => r.Prioridad)
-                .ToListAsync();
+            // Eliminar la reserva
+            await docRef.DeleteAsync();
 
-            for (int i = 0; i < reservasRestantes.Count; i++)
+            // Recalcular prioridades de las reservas pendientes restantes para ese libro
+            var pendientesQuery = _firestore.Reservas
+                .WhereEqualTo("libroId", libroId)
+                .WhereEqualTo("estado", "pendiente")
+                .OrderBy("prioridad");
+
+            var pendientesSnapshot = await pendientesQuery.GetSnapshotAsync();
+
+            var batch = _firestore._db.StartBatch(); // Nota: usa el _db interno o agrega método en FirestoreService
+
+            int nuevaPrioridad = 1;
+            foreach (var doc in pendientesSnapshot.Documents)
             {
-                reservasRestantes[i].Prioridad = i + 1;
+                var updateData = new Dictionary<string, object>
+                {
+                    { "prioridad", nuevaPrioridad }
+                };
+                batch.Update(doc.Reference, updateData);
+                nuevaPrioridad++;
             }
 
-            await _context.SaveChangesAsync();
+            await batch.CommitAsync();
 
-            return Ok(new { mensaje = "Reserva cancelada y prioridades actualizadas." });
+            return Ok(new { mensaje = "Reserva cancelada y prioridades actualizadas correctamente." });
         }
     }
 
     public class CrearReservaDto
     {
-        public int LibroId { get; set; }
+        public string LibroId { get; set; } = string.Empty;   // Cambiado a string porque Firestore usa string Id
     }
 }
